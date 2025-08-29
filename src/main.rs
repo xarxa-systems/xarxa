@@ -161,6 +161,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     http_runtime.shutdown_background();
     loader_runtime.shutdown_background();
 
-    info!("Xarxa kernel shutdown complete");
+    info!("Xarxa shutdown complete");
     Ok(())
 }
