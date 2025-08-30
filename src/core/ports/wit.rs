@@ -14,10 +14,11 @@
 use wasmtime::component;
 
 component::bindgen!({
-    path: "wit/engine",
-    world: "controller",
-    // async: true,
+    path: "wit/orchestrator",
+    world: "orchestrator",
 });
+
+
 
 // use async_trait::async_trait;
 
