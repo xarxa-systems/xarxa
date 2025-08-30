@@ -12,8 +12,9 @@
  */
 
 use wasmtime::*;
-use wasmtime::component::{Component, Linker};
-use wasmtime_wasi::p2::{WasiCtx, WasiCtxBuilder, WasiView, IoView};
+use wasmtime::component::{Component, Linker, ResourceAny, Resource};
+
+use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 use wasmtime_wasi::ResourceTable;
 
 use std::collections::HashMap;
@@ -23,9 +24,13 @@ use tokio::sync::RwLock;
 use serde_json::{Value as JsonValue, json};
 use tracing::info;
 
-use crate::core::ports::wit::Controller;
-use crate::core::ports::wit::exports::xarxa::engine::worker_handler::History;
-use crate::core::ports::wit::xarxa::engine::engine_types::{Kvpair, Value};
+// use crate::core::ports::wit::Controller;
+// use crate::core::ports::wit::exports::xarxa::engine::workflow_handler::History;
+// use crate::core::ports::wit::xarxa::engine::engine_types::{Kvpair, Value};
+
+use crate::core::ports::wit::Orchestrator;
+use crate::core::ports::wit::xarxa::api::engine_types::{Kvpair, Value};
+use crate::core::ports::wit::exports::xarxa::api::workflow_ctrl::History;
 
 struct HostState {
     ctx: WasiCtx,
@@ -33,17 +38,23 @@ struct HostState {
     limits: StoreLimits,
 }
 
+// impl WasiView for HostState {
+//     fn ctx(&mut self) -> &mut WasiCtx {
+//         &mut self.ctx
+//     }
+// }
+
 impl WasiView for HostState {
-    fn ctx(&mut self) -> &mut WasiCtx {
-        &mut self.ctx
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView { ctx: &mut self.ctx, table: &mut self.table }
     }
 }
 
-impl IoView for HostState  {
-    fn table(&mut self) -> &mut ResourceTable {
-        &mut self.table
-    }
-}
+// impl IoView for HostState  {
+//     fn table(&mut self) -> &mut ResourceTable {
+//         &mut self.table
+//     }
+// }
 
 pub struct LoadedWitPlugin {
     component: Component,
@@ -149,9 +160,10 @@ impl WitPluginRuntime {
         wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
         
         // Create component instance
-        let instance = Controller::instantiate(&mut store, component, &linker)?;
-        let worker_handler = instance.xarxa_engine_worker_handler();
-        
+        let instance = Orchestrator::instantiate(&mut store, component, &linker)?;
+        let workflow_handler = instance.xarxa_api_workflow_ctrl().workflow_engine();
+        let engine = instance.xarxa_api_workflow_ctrl().call_create_workflow_engine(&mut store)?;
+
         let result = match function_name {
             "start-workflow" => {
                 let workflow_name = params.get("workflow_name")
@@ -160,7 +172,7 @@ impl WitPluginRuntime {
                 
                 let input = self.json_to_kvpairs(params.get("input").unwrap_or(&json!([])))?;
                 
-                match worker_handler.call_start_workflow(&mut store, workflow_name, &input) {
+                match workflow_handler.call_start_workflow(&mut store, engine, workflow_name, &input) {
                     Ok(Ok(workflow_run)) => {
                         json!({
                             "success": true,
@@ -190,7 +202,7 @@ impl WitPluginRuntime {
                 
                 let history = History{ tasks_result:  vec![]};
                 
-                match worker_handler.call_continue_workflow(&mut store, run_id, &history) {
+                match workflow_handler.call_continue_workflow(&mut store, engine, run_id, &history) {
                     Ok(Ok(result)) => {
                         json!({
                             "success": true,
@@ -219,7 +231,7 @@ impl WitPluginRuntime {
                 
                 let input = self.json_to_kvpairs(params.get("input").unwrap_or(&json!([])))?;
                 
-                match worker_handler.call_execute_activity(&mut store, activity_name, &input) {
+                match workflow_handler.call_execute_activity(&mut store, engine, activity_name, &input) {
                     Ok(Ok(result)) => {
                         json!({
                             "success": true,
@@ -292,7 +304,7 @@ impl WitPluginRuntime {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0); // todo handle with err
                 
-                match worker_handler.call_cancel_workflow(&mut store, run_id) {
+                match workflow_handler.call_cancel_workflow(&mut store, engine, run_id) {
                     Ok(Ok(result)) => {
                         json!({
                             "success": true,
