@@ -18,6 +18,7 @@ use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 use wasmtime_wasi::ResourceTable;
 
 use std::collections::HashMap;
+use std::str::Bytes;
 use anyhow::{Result, Context, bail};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -30,19 +31,28 @@ use tracing::info;
 
 use crate::core::ports::wit::Orchestrator;
 use crate::core::ports::wit::xarxa::api::engine_types::{Kvpair, Value};
-use crate::core::ports::wit::exports::xarxa::api::workflow_ctrl::History;
+use crate::core::ports::wit::xarxa::api::http_types::{Header as xaHeader, Method as xaMethod};
+use crate::core::ports::wit::xarxa::api::host_controller::{Host as MainController, add_to_linker as linker_host_ctrl};
+use crate::core::ports::wit::xarxa::api::custom_http::{Host as CustomHTTP, add_to_linker as linker_custom_http};
+use crate::core::ports::wit::xarxa::api::logger::{Host as LoggerHost, add_to_linker as linker_logger};
+
+use wasmtime::component::HasData;
+// use crate::core::ports::wit::xarxa::api::engine_types::add_to_linker
 
 struct HostState {
     ctx: WasiCtx,
     table: ResourceTable,
     limits: StoreLimits,
+    /// Called on every `send-result` from the plugin. Used by the server to
+    /// checkpoint state to durable storage. None in local (no-server) mode.
+    on_result: Option<Arc<dyn Fn(u64, Vec<u8>) + Send + Sync>>,
 }
 
-// impl WasiView for HostState {
-//     fn ctx(&mut self) -> &mut WasiCtx {
-//         &mut self.ctx
-//     }
-// }
+struct HostController;
+
+impl HasData for HostController {
+    type Data<'a> = &'a mut HostState;
+}
 
 impl WasiView for HostState {
     fn ctx(&mut self) -> WasiCtxView<'_> {
@@ -50,11 +60,40 @@ impl WasiView for HostState {
     }
 }
 
-// impl IoView for HostState  {
-//     fn table(&mut self) -> &mut ResourceTable {
-//         &mut self.table
-//     }
-// }
+impl CustomHTTP for HostState {
+    fn http_request(
+        &mut self,
+        headers: Vec<xaHeader>,
+        method: xaMethod,
+        url: String,
+        _body: Vec<u8>,
+    ) -> std::result::Result<Vec<u8>, String> {
+        println!("🔥 HOST CALLED: http_request with url={}", url);
+        info!("🌐 Host HTTP request to: {}", url);
+
+        // Here you would implement the actual HTTP request
+        // For now, return a placeholder response
+        Ok(b"HTTP response placeholder".to_vec())
+    }
+}
+
+impl LoggerHost for HostState {
+    fn logging(
+        &mut self,
+        msg: Vec<u8>,
+    ){
+        info!("ℹ️ Logging: {:?}", String::from_utf8(msg));
+    }
+}
+
+impl MainController for HostState {
+    fn send_result(&mut self, id: u64, data: Vec<u8>) {
+        info!("📡 send-result run_id={} bytes={}", id, data.len());
+        if let Some(cb) = &self.on_result {
+            cb(id, data);
+        }
+    }
+}
 
 pub struct LoadedWitPlugin {
     component: Component,
@@ -73,12 +112,12 @@ impl WitPluginRuntime {
         let mut config = Config::new();
         config.wasm_component_model(true);
         config.async_support(false); // Synchronous operation for simplicity
-        
+
         let engine = Engine::new(&config)
             .context("Failed to create WASM engine with component model support")?;
 
         let plugins = Arc::new(RwLock::new(HashMap::new()));
-        
+
         info!("🚀 Initialized WIT Plugin Manager");
 
         Ok(WitPluginRuntime {
@@ -93,19 +132,19 @@ impl WitPluginRuntime {
         if name.is_empty() {
             bail!("Plugin name cannot be empty");
         }
-        
+
         if wasm_bytes.is_empty() {
             bail!("WASM bytes cannot be empty for plugin '{}'", name);
         }
-        
+
         // Create WIT component
         let component = Component::new(&self.engine, wasm_bytes)
             .with_context(|| format!("Failed to create WIT component for plugin '{}'", name))?;
-        
+
         // Get plugin information
         // let info = self.extract_wit_plugin_info(&component, name).await?;
         // TODO: It should me information about pipelines, activities, etc.
-        
+
         let loaded_plugin = LoadedWitPlugin {
             component,
             // info: info.clone(),
@@ -117,230 +156,61 @@ impl WitPluginRuntime {
             let plugins = self.plugins.read().await;
             if plugins.contains_key(name) {
                 info!("⚠️  Plugin '{}' is already loaded, replacing...", name);
-                // todo: to think how to handle it. 
+                // todo: to think how to handle it.
             }
         }
-        
+
         let mut plugins = self.plugins.write().await;
         plugins.insert(name.to_string(), loaded_plugin);
-        
+
         Ok(())
     }
 
-    pub async fn execute_wit_function( &self, plugin_name: &str, function_name: &str, params: JsonValue) -> Result<JsonValue> {
-        let mut plugins = self.plugins.write().await;
-        
-        let plugin = plugins.get_mut(plugin_name)
-            .with_context(|| format!("WIT Plugin '{}' not found", plugin_name))?;
-        
-        // Increment execution counter
-        plugin.execution_count += 1;
-        let execution_count = plugin.execution_count;
-        
-        info!("🚀 Executing WIT function: {}.{} (execution #{})", 
-              plugin_name, function_name, execution_count);
-        
-        // Execute the function
-        let result = self.execute_wit_component_function(&plugin.component, function_name, &params).await?;
-        
-        info!("✅ WIT function completed: {}.{}", plugin_name, function_name);
-        Ok(result)
+    pub async fn execute_wit_function(
+        &self,
+        plugin_name: &str,
+        function_name: &str,
+        params: JsonValue,
+    ) -> Result<JsonValue> {
+        self.execute_wit_function_with_hook(plugin_name, function_name, params, None).await
     }
 
-    async fn execute_wit_component_function(
+    pub async fn execute_wit_function_with_hook(
         &self,
-        component: &Component,
+        plugin_name: &str,
         function_name: &str,
-        params: &JsonValue,
+        params: JsonValue,
+        on_result: Option<Arc<dyn Fn(u64, Vec<u8>) + Send + Sync>>,
     ) -> Result<JsonValue> {
-        let mut store = self.create_store()?;
-        
-        // Create linker and add WASI
-        let mut linker = Linker::new(&self.engine);
-        wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
-        
-        // Create component instance
-        let instance = Orchestrator::instantiate(&mut store, component, &linker)?;
-        let workflow_handler = instance.xarxa_api_workflow_ctrl().workflow_engine();
-        let engine = instance.xarxa_api_workflow_ctrl().call_create_workflow_engine(&mut store)?;
-
-        let result = match function_name {
-            "start-workflow" => {
-                let workflow_name = params.get("workflow_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("default");
-                
-                let input = self.json_to_kvpairs(params.get("input").unwrap_or(&json!([])))?;
-                
-                match workflow_handler.call_start_workflow(&mut store, engine, workflow_name, &input) {
-                    Ok(Ok(workflow_run)) => {
-                        json!({
-                            "success": true,
-                            "result": format!("Workflow started successfully"),
-                            "workflow_run": format!("{:?}", workflow_run),
-                            "run_id": format!("run_{}", chrono::Utc::now().timestamp())
-                        })
-                    }
-                    Ok(Err(error)) => {
-                        json!({
-                            "success": false,
-                            "error": format!("Workflow error: {:?}", error)
-                        })
-                    }
-                    Err(e) => {
-                        json!({
-                            "success": false,
-                            "error": format!("Runtime error: {}", e)
-                        })
-                    }
-                }
-            }
-            "continue-workflow" => {
-                let run_id = params.get("run_id")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0); // todo handle err
-                
-                let history = History{ tasks_result:  vec![]};
-                
-                match workflow_handler.call_continue_workflow(&mut store, engine, run_id, &history) {
-                    Ok(Ok(result)) => {
-                        json!({
-                            "success": true,
-                            "result": result,
-                            "run_id": run_id
-                        })
-                    }
-                    Ok(Err(error)) => {
-                        json!({
-                            "success": false,
-                            "error": format!("Workflow error: {:?}", error)
-                        })
-                    }
-                    Err(e) => {
-                        json!({
-                            "success": false,
-                            "error": format!("Runtime error: {}", e)
-                        })
-                    }
-                }
-            }
-            "execute-activity" => {
-                let activity_name = params.get("activity_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("default");
-                
-                let input = self.json_to_kvpairs(params.get("input").unwrap_or(&json!([])))?;
-                
-                match workflow_handler.call_execute_activity(&mut store, engine, activity_name, &input) {
-                    Ok(Ok(result)) => {
-                        json!({
-                            "success": true,
-                            "result": result,
-                            "activity": activity_name
-                        })
-                    }
-                    Ok(Err(error)) => {
-                        json!({
-                            "success": false,
-                            "error": error,
-                            "activity": activity_name
-                        })
-                    }
-                    Err(e) => {
-                        json!({
-                            "success": false,
-                            "error": format!("Runtime error: {}", e)
-                        })
-                    }
-                }
-            }
-            // "signal-workflow" => {
-            //     let run_id = params.get("run_id")
-            //         .and_then(|v| v.as_u64())
-            //         .unwrap_or(0);
-                
-            //     // Create signal from parameters
-            //     let signal_data = params.get("signal").unwrap_or(&json!({}));
-                
-            //     #[warn(unreachable_code)]
-            //     let signal = engine::api::engine_types::Signal {
-            //         // name: signal_data.get("name")
-            //         //     .and_then(|v| v.as_str())
-            //         //     .unwrap_or("default")
-            //         //     .to_string(),
-            //         // payload: signal_data.get("payload")
-            //         //     .and_then(|v| v.as_str())
-            //         //     .unwrap_or("{}")
-            //         //     .to_string(),
-                    
-            //         payload: todo!(),
-            //     };
-                
-            //     match worker_handler.call_signal_workflow(&mut store, run_id, &signal) {
-            //         Ok(Ok(result)) => {
-            //             json!({
-            //                 "success": true,
-            //                 "result": result,
-            //                 "run_id": run_id,
-            //                 "signal": signal.payload,
-            //             })
-            //         }
-            //         Ok(Err(error)) => {
-            //             json!({
-            //                 "success": false,
-            //                 "error": format!("Workflow error: {:?}", error)
-            //             })
-            //         }
-            //         Err(e) => {
-            //             json!({
-            //                 "success": false,
-            //                 "error": format!("Runtime error: {}", e)
-            //             })
-            //         }
-            //     }
-            // }
-            "cancel-workflow" => {
-                let run_id = params.get("run_id")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0); // todo handle with err
-                
-                match workflow_handler.call_cancel_workflow(&mut store, engine, run_id) {
-                    Ok(Ok(result)) => {
-                        json!({
-                            "success": true,
-                            "result": result,
-                            "run_id": run_id,
-                            "action": "cancelled"
-                        })
-                    }
-                    Ok(Err(error)) => {
-                        json!({
-                            "success": false,
-                            "error": format!("Workflow error: {:?}", error)
-                        })
-                    }
-                    Err(e) => {
-                        json!({
-                            "success": false,
-                            "error": format!("Runtime error: {}", e)
-                        })
-                    }
-                }
-            }
-            _ => {
-                json!({
-                    "success": false,
-                    "error": format!("Unknown WIT function: {}", function_name)
-                })
-            }
+        // Take read lock only long enough to clone the component (cheap — Arc inside).
+        // This fixes the write-lock-blocks-all-workflows bug from ROADMAP 1.1.
+        let component = {
+            let mut plugins = self.plugins.write().await;
+            let plugin = plugins.get_mut(plugin_name)
+                .with_context(|| format!("WIT Plugin '{}' not found", plugin_name))?;
+            plugin.execution_count += 1;
+            info!("🚀 Executing WIT function: {}.{} (execution #{})",
+                  plugin_name, function_name, plugin.execution_count);
+            plugin.component.clone()
         };
-        
+
+        // Run synchronous WASM outside the tokio thread pool to avoid
+        // "cannot start a runtime from within a runtime" (ROADMAP 1.2).
+        let engine = self.engine.clone();
+        let function_name_owned = function_name.to_string();
+        let result = tokio::task::spawn_blocking(move || {
+            execute_wasm_sync(&engine, &component, &function_name_owned, &params, on_result)
+        })
+        .await
+        .context("WASM execution task panicked")??;
+
+        info!("✅ WIT function completed: {}.{}", plugin_name, function_name);
         Ok(result)
     }
 
     pub async fn remove_plugin(&self, name: &str) -> Result<(), Box<dyn std::error::Error>> {
         let mut plugins = self.plugins.write().await;
-        
+
         if plugins.remove(name).is_some() {
             info!("Removed plugin: {}", name);
             Ok(())
@@ -352,10 +222,10 @@ impl WitPluginRuntime {
     pub async fn reload_plugin(&self, name: &str, wasm_bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         // Remove the old plugin
         self.remove_plugin(name).await.ok(); // Ignore error if plugin didn't exist
-        
+
         // Load the new one
         self.load_wit_plugin(name, wasm_bytes).await?;
-        
+
         info!("Reloaded plugin: {}", name);
         Ok(())
     }
@@ -365,29 +235,9 @@ impl WitPluginRuntime {
         plugins.keys().cloned().collect()
     }
 
-    fn create_store(&self) -> Result<Store<HostState>> {
-        let wasi = WasiCtxBuilder::new()
-            .inherit_stdio()
-            .build();
-            
-        let host_state = HostState {
-            ctx: wasi,
-            table: ResourceTable::new(),
-            limits: StoreLimitsBuilder::new()
-                .memory_size(1 << 28) // 256 MB
-                .instances(10)
-                .build(),
-        };
-        
-        let mut store = Store::new(&self.engine, host_state);
-        store.limiter(|state| &mut state.limits);
-        
-        Ok(store)
-    }
-
     fn json_to_kvpairs(&self, params: &JsonValue) -> Result<Vec<Kvpair>> {
         let mut kvpairs = Vec::new();
-        
+
         match params {
             JsonValue::Array(arr) => {
                 // If already an array of kvpairs
@@ -411,7 +261,7 @@ impl WitPluginRuntime {
                         JsonValue::Bool(b) => b.to_string(),
                         _ => serde_json::to_string(value)?,
                     };
-                    
+
                     kvpairs.push(Kvpair {
                         key: key.clone(),
                         value: Value::Str(value_str),
@@ -422,7 +272,255 @@ impl WitPluginRuntime {
                 // For other types create empty array
             }
         }
-        
+
         Ok(kvpairs)
     }
+} // end impl WitPluginRuntime
+
+fn execute_wasm_sync(
+    engine: &Engine,
+    component: &Component,
+    function_name: &str,
+    params: &JsonValue,
+    on_result: Option<Arc<dyn Fn(u64, Vec<u8>) + Send + Sync>>,
+) -> Result<JsonValue> {
+    let mut store = create_store_for_exec(engine, on_result)?;
+
+    // Create linker and add WASI
+    let mut linker = Linker::new(engine);
+    wasmtime_wasi::p2::add_to_linker_sync(&mut linker)?;
+
+    // Add host controller implementation
+    println!("🔧 Adding host controller to linker...");
+    linker_host_ctrl::<_, HostController>(&mut linker, |state: &mut HostState| state)?;
+    linker_custom_http::<_, HostController>(&mut linker, |state: &mut HostState| state)?;
+    linker_logger::<_, HostController>(&mut linker, |state: &mut HostState| state)?;
+    println!("✅ Host controller added to linker successfully");
+
+    // Create component instance
+    let instance = Orchestrator::instantiate(&mut store, component, &linker)?;
+
+    // Debug: Print available exports
+    info!("🔍 Available component exports:");
+    // TODO: Add component introspection here if needed
+
+    let workflow_handler = instance.xarxa_api_workflow_ctrl();
+    // let engine = instance.xarxa_api_workflow_ctrl().call_create_workflow_engine(&mut store)?;
+
+    let result = match function_name {
+        "start-workflow" => {
+            let run_id = params.get("run_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+
+            let started_at = params.get("started_at")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+
+            let workflow_name = params.get("workflow_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("default");
+
+            // input may arrive as a JSON string (already serialized) or as a
+            // JSON object — either way we pass the raw JSON bytes to the plugin.
+            let input_owned: String = match params.get("input") {
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(other) => other.to_string(),
+                None => "{}".to_string(),
+            };
+            let input = input_owned.as_bytes();
+
+            match workflow_handler.call_start_workflow(&mut store, run_id, started_at, workflow_name, input) {
+                Ok(Ok(workflow_run)) => {
+                    let input_str = String::from_utf8(workflow_run.input)
+                        .unwrap_or_else(|_| "<non-utf8>".to_string());
+                    json!({
+                        "success": true,
+                        "input": input_str,
+                    })
+                }
+                Ok(Err(error)) => {
+                    json!({
+                        "success": false,
+                        "error": format!("Workflow error: {:?}", error)
+                    })
+                }
+                Err(e) => {
+                    json!({
+                        "success": false,
+                        "error": format!("Runtime error: {}", e)
+                    })
+                }
+            }
+        }
+        "continue-workflow" => {
+            let run_id = params.get("run_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0); // todo handle err
+
+            let state = params.get("state")
+                .and_then(|v| v.as_str())
+                .unwrap_or("[]")
+                .as_bytes();
+
+            match workflow_handler.call_continue_workflow(&mut store, run_id, state) {
+                Ok(Ok(result)) => {
+                    json!({
+                        "success": true,
+                        "result": result,
+                        "run_id": run_id
+                    })
+                }
+                Ok(Err(error)) => {
+                    json!({
+                        "success": false,
+                        "error": format!("Workflow error: {:?}", error)
+                    })
+                }
+                Err(e) => {
+                    json!({
+                        "success": false,
+                        "error": format!("Runtime error: {}", e)
+                    })
+                }
+            }
+        }
+        // "execute-activity" => {
+        //     let activity_name = params.get("activity_name")
+        //         .and_then(|v| v.as_str())
+        //         .unwrap_or("default");
+
+        //     let input = self.json_to_kvpairs(params.get("input").unwrap_or(&json!([])))?;
+
+        //     // match workflow_handler.call_execute_activity(&mut store, engine, activity_name, &input) {
+        //     match workflow_handler.call_execute_activity(&mut store, activity_name, &input) {
+        //         Ok(Ok(result)) => {
+        //             json!({
+        //                 "success": true,
+        //                 "result": result,
+        //                 "activity": activity_name
+        //             })
+        //         }
+        //         Ok(Err(error)) => {
+        //             json!({
+        //                 "success": false,
+        //                 "error": error,
+        //                 "activity": activity_name
+        //             })
+        //         }
+        //         Err(e) => {
+        //             json!({
+        //                 "success": false,
+        //                 "error": format!("Runtime error: {}", e)
+        //             })
+        //         }
+        //     }
+        // }
+        // "signal-workflow" => {
+        //     let run_id = params.get("run_id")
+        //         .and_then(|v| v.as_u64())
+        //         .unwrap_or(0);
+
+        //     // Create signal from parameters
+        //     let signal_data = params.get("signal").unwrap_or(&json!({}));
+
+        //     #[warn(unreachable_code)]
+        //     let signal = engine::api::engine_types::Signal {
+        //         // name: signal_data.get("name")
+        //         //     .and_then(|v| v.as_str())
+        //         //     .unwrap_or("default")
+        //         //     .to_string(),
+        //         // payload: signal_data.get("payload")
+        //         //     .and_then(|v| v.as_str())
+        //         //     .unwrap_or("{}")
+        //         //     .to_string(),
+
+        //         payload: todo!(),
+        //     };
+
+        //     match worker_handler.call_signal_workflow(&mut store, run_id, &signal) {
+        //         Ok(Ok(result)) => {
+        //             json!({
+        //                 "success": true,
+        //                 "result": result,
+        //                 "run_id": run_id,
+        //                 "signal": signal.payload,
+        //             })
+        //         }
+        //         Ok(Err(error)) => {
+        //             json!({
+        //                 "success": false,
+        //                 "error": format!("Workflow error: {:?}", error)
+        //             })
+        //         }
+        //         Err(e) => {
+        //             json!({
+        //                 "success": false,
+        //                 "error": format!("Runtime error: {}", e)
+        //             })
+        //         }
+        //     }
+        // }
+        // "cancel-workflow" => {
+        //     let run_id = params.get("run_id")
+        //         .and_then(|v| v.as_u64())
+        //         .unwrap_or(0); // todo handle with err
+
+        //     // match workflow_handler.call_cancel_workflow(&mut store, engine, run_id) {
+        //     match workflow_handler.call_cancel_workflow(&mut store, run_id) {
+        //         Ok(Ok(result)) => {
+        //             json!({
+        //                 "success": true,
+        //                 "result": result,
+        //                 "run_id": run_id,
+        //                 "action": "cancelled"
+        //             })
+        //         }
+        //         Ok(Err(error)) => {
+        //             json!({
+        //                 "success": false,
+        //                 "error": format!("Workflow error: {:?}", error)
+        //             })
+        //         }
+        //         Err(e) => {
+        //             json!({
+        //                 "success": false,
+        //                 "error": format!("Runtime error: {}", e)
+        //             })
+        //         }
+        //     }
+        // }
+        _ => {
+            json!({
+                "success": false,
+                "error": format!("Unknown WIT function: {}", function_name)
+            })
+        }
+    };
+
+    Ok(result)
+}
+
+fn create_store_for_exec(
+    engine: &Engine,
+    on_result: Option<Arc<dyn Fn(u64, Vec<u8>) + Send + Sync>>,
+) -> Result<Store<HostState>> {
+    let wasi = WasiCtxBuilder::new()
+        .inherit_stdio()
+        .build();
+
+    let host_state = HostState {
+        ctx: wasi,
+        table: ResourceTable::new(),
+        limits: StoreLimitsBuilder::new()
+            .memory_size(1 << 28) // 256 MB
+            .instances(10)
+            .build(),
+        on_result,
+    };
+
+    let mut store = Store::new(engine, host_state);
+    store.limiter(|state| &mut state.limits);
+
+    Ok(store)
 }

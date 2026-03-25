@@ -1,3 +1,19 @@
+[workspace]
+members = [
+    ".",
+    "xarxa-sdk",
+    "xarxa-sdk-macros",
+    "examples/booking-workflow",
+]
+resolver = "2"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tracing = "0.1"
+
 [package]
 name = "xarxa"
 version = "0.1.0"
@@ -9,7 +25,7 @@ axum = { version = "0.8.4", features = ["multipart", "macros", "query"] }
 axum-extra = { version = "0.10.1", features = ["typed-header"]}
 axum-cookie = "0.2.3"
 tower-http = { version = "0.6.6", features = ["trace"] }
-sqlx = { version = "0.8.6", features = ["postgres", "runtime-tokio-native-tls", "uuid", "chrono"] }
+sqlx = { version = "0.8.6", features = ["postgres", "sqlite", "runtime-tokio-native-tls", "uuid", "chrono"] }
 wasmtime = { version = "36.0.2", features = ["component-model", "runtime"] }
 wasmtime-wasi = "36.0.2"
 serde = { version = "1.0.219", features = ["derive"] }
@@ -34,3 +50,7 @@ rand = "0.9.2"
 validator = { version = "0.20.0", features = ["derive"] }
 jsonwebtoken = "9.3.1"
 cookie = "0.18.1"
+clap = { version = "4.6", features = ["derive", "env"] }
+reqwest = { version = "0.13", features = ["json"] }
+colored = "3.1.1"
+toml = "1.1.0+spec-1.1.0"

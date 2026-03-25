@@ -292,7 +292,7 @@ impl PluginAutoLoader {
                 
                 // TODO: Implement plugin removal from PluginManager
                 warn!("🚧 Plugin removal not implemented yet: {}", plugin_name);
-                // Здесь нужно добавить метод в WitPluginRuntime для удаления плагинов
+                // TODO: add unload_plugin() to WitPluginRuntime
                 // workflow_manager.unload_plugin(&plugin_name).await?;
             }
         }

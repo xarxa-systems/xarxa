@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT role as \"role: NamespaceRole\"\n            FROM namespace_members\n            WHERE user_id = $1 AND namespace_id = $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role: NamespaceRole",
+        "type_info": {
+          "Custom": {
+            "name": "namespace_role",
+            "kind": {
+              "Enum": [
+                "owner",
+                "admin",
+                "editor",
+                "viewer"
+              ]
+            }
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "70723889181670c5216e8c2ae25064debf009897e27a2287b9fc440c4e8fc51a"
+}
