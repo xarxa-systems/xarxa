@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, namespace_id, key, display_name, description, active_version_id, is_archived, created_by, created_at, updated_at\n            FROM workflows\n            ORDER BY created_at DESC\n            ",
+  "query": "\n            INSERT INTO workflows (id, namespace_id, key, display_name, description ,created_by)\n            VALUES ($1, $2, $3, $4, $5, $6)\n            RETURNING id, namespace_id, key, display_name, description, active_version_id, is_archived, created_by, created_at, updated_at\n            ",
   "describe": {
     "columns": [
       {
@@ -60,7 +60,19 @@
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Uuid",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "citext",
+            "kind": "Simple"
+          }
+        },
+        "Text",
+        "Text",
+        "Uuid"
+      ]
     },
     "nullable": [
       false,
@@ -75,5 +87,5 @@
       false
     ]
   },
-  "hash": "c6cf2a38fc363b60355252da2e9ce0d2ffac10642742b49dc6c6985c72e4813c"
+  "hash": "51e7d327e231ac96ab9d6ce002ed51309a3efec356ecb719b53fa9e71d7ad635"
 }

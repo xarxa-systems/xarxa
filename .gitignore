@@ -17,3 +17,5 @@ target
 */.env
 .vscode
 .DS_Store
+xarxa.db
+plugins/

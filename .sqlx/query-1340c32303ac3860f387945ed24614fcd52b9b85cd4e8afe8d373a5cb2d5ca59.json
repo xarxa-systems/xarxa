@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, namespace_id, key, display_name, description, active_version_id, is_archived, created_by, created_at, updated_at\n            FROM workflows\n            WHERE key = $1\n            ",
+  "query": "\n            SELECT w.id, w.namespace_id, w.key, w.display_name, w.description, wv.version as active_version, w.is_archived, w.created_by, w.created_at, w.updated_at \n            FROM workflows w \n                JOIN workflow_versions wv \n                ON w.id = wv.workflow_id\n            WHERE w.namespace_id = $1\n            ORDER BY w.created_at DESC\n            ",
   "describe": {
     "columns": [
       {
@@ -35,8 +35,8 @@
       },
       {
         "ordinal": 5,
-        "name": "active_version_id",
-        "type_info": "Uuid"
+        "name": "active_version",
+        "type_info": "Text"
       },
       {
         "ordinal": 6,
@@ -61,12 +61,7 @@
     ],
     "parameters": {
       "Left": [
-        {
-          "Custom": {
-            "name": "citext",
-            "kind": "Simple"
-          }
-        }
+        "Uuid"
       ]
     },
     "nullable": [
@@ -75,12 +70,12 @@
       false,
       false,
       true,
-      true,
+      false,
       false,
       false,
       false,
       false
     ]
   },
-  "hash": "7c4ff7418164a194d1fb919e0b5139f49edb160b8883b4471f96fce837904a48"
+  "hash": "1340c32303ac3860f387945ed24614fcd52b9b85cd4e8afe8d373a5cb2d5ca59"
 }

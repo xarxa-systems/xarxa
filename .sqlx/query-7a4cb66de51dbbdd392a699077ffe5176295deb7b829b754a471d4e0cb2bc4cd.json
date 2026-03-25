@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO workflow_versions (id, workflow_id, version, wasm_md5, wasm_size_bytes, storage_url, created_by, changelog)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\n            RETURNING id, workflow_id, version, wasm_md5, wasm_size_bytes, storage_url, created_by, changelog\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "workflow_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "version",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "wasm_md5",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 4,
+        "name": "wasm_size_bytes",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "storage_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_by",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "changelog",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Bytea",
+        "Int8",
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "7a4cb66de51dbbdd392a699077ffe5176295deb7b829b754a471d4e0cb2bc4cd"
+}

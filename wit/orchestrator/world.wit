@@ -1,0 +1,86 @@
+package xarxa:api@0.3.1;
+
+world orchestrator {
+    export workflow-ctrl;
+
+    import custom-http;
+    import host-controller;
+    import logger;
+}
+
+interface workflow-ctrl {
+    use engine-types.{kvpair, workflow-run, workflow-error, run-id, unixtime};
+
+    /// Start a new workflow. The host passes run-id and started-at timestamp so
+    /// the plugin can echo them back — no SQLite access needed inside WASM.
+    start-workflow: func(run-id: run-id, started-at: unixtime, workflow-name: string, input: list<u8>) -> result<workflow-run, workflow-error>;
+
+    continue-workflow: func(id: run-id, state: list<u8>) -> result<list<u8>, workflow-error>;
+}
+
+interface host-controller {
+    use engine-types.{run-id};
+
+    send-result: func(id: run-id, data: list<u8>);
+}
+
+interface custom-http {
+    use http-types.{header, method};
+
+    http-request: func(headers: list<header>, method: method, url: string, body: list<u8>) -> result<list<u8>, string>;
+}
+
+interface logger {
+    use engine-types.{run-id};
+
+    logging: func(msg: list<u8>);
+}
+
+interface http-types {
+    enum method {
+        get,
+        post,
+    }
+
+    record header {
+        key: string,
+        value: string,
+    }
+}
+
+interface engine-types {
+    variant value {
+        none,
+        str(string),
+        int64(s64),
+        uint64(u64),
+        float64(f64),
+        boolean(bool),
+        any(list<u8>),
+    }
+
+    record kvpair {
+        key: string,
+        value: value,
+    }
+
+    type run-id = u64;
+
+    type unixtime = u64;
+
+    record workflow-run {
+        id: run-id,
+        input: list<u8>,
+        timestamp: unixtime,
+    }
+
+    enum code {
+        not-found,
+        empty-input,
+    }
+
+    record workflow-error {
+        err: string,
+        code: code,
+    }
+}

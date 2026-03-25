@@ -27,7 +27,7 @@ use crate::{
         http::{auth::Claims, ApiError}, 
         wasmtime::wit_runtime::WitPluginRuntime,
     }, 
-    core::{domain::workflow::{NewWorkflowParams, Workflow, WorkflowResponse}, services::workflow::WorkflowService},
+    core::{domain::workflow::{NewWorkflowParams, WorkflowResponse}, services::workflow::WorkflowService},
 };
 
 
